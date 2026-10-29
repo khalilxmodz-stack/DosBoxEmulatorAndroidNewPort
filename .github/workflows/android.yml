@@ -159,7 +159,7 @@ jobs:
           mkdir -p dist
           cp "$apk" dist/DOSBox-Staging-Android-ARMv7-debug.apk
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DOSBox-Staging-Android-ARMv7
           path: dist/DOSBox-Staging-Android-ARMv7-debug.apk
