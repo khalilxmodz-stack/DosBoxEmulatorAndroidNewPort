@@ -227,4 +227,15 @@ void Shader::SetUniform3f(const std::string& name, const float val1,
 	}
 }
 
-#endif
+#else // !C_OPENGL
+
+// This build has no OpenGL renderer (e.g. Android, which has no desktop GL).
+// ShaderManager still calls this unconditionally, so provide a version that
+// reports failure instead of leaving an undefined symbol.
+bool Shader::BuildShaderProgram([[maybe_unused]] const std::string& shader_source)
+{
+	LOG_ERR("RENDER: Shaders need the OpenGL renderer, which is disabled in this build");
+	return false;
+}
+
+#endif // C_OPENGL
