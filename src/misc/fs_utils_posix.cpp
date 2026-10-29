@@ -5,8 +5,11 @@
 
 #include <cctype>
 #include <cerrno>
+#include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <glob.h>
+#include <strings.h>
 #include <optional>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -45,6 +48,52 @@ static std::string translate_to_glob_pattern(const std::string &path) noexcept
 	return glob_pattern;
 }
 
+#if defined(__ANDROID__) && __ANDROID_API__ < 28
+// Bionic only provides glob(3) from API 28. For older Android versions resolve
+// the path one component at a time, matching names case-insensitively. Like the
+// glob()-based version, the alphabetically first match wins when ambiguous.
+static std::string resolve_case_insensitive(const std::string& path) noexcept
+{
+	std::string result = (!path.empty() && path[0] == '/') ? "/" : "";
+	size_t pos = 0;
+
+	while (pos < path.size()) {
+		while (pos < path.size() && path[pos] == '/') {
+			++pos;
+		}
+		if (pos >= path.size()) {
+			break;
+		}
+		const auto end = path.find('/', pos);
+		const std::string component = path.substr(
+		        pos, end == std::string::npos ? std::string::npos : end - pos);
+		pos = (end == std::string::npos) ? path.size() : end;
+
+		DIR* dir = opendir(result.empty() ? "." : result.c_str());
+		if (!dir) {
+			return "";
+		}
+		std::string found = {};
+		while (const dirent* entry = readdir(dir)) {
+			if (strcasecmp(entry->d_name, component.c_str()) == 0 &&
+			    (found.empty() || strcmp(entry->d_name, found.c_str()) < 0)) {
+				found = entry->d_name;
+			}
+		}
+		closedir(dir);
+
+		if (found.empty()) {
+			return "";
+		}
+		if (!result.empty() && result.back() != '/') {
+			result += '/';
+		}
+		result += found;
+	}
+	return result;
+}
+#endif
+
 std::string to_native_path(const std::string &path) noexcept
 {
 	if (local_drive_path_exists(path.c_str()))
@@ -55,6 +104,9 @@ std::string to_native_path(const std::string &path) noexcept
 	if (local_drive_path_exists(posix_path.c_str()))
 		return posix_path;
 
+#if defined(__ANDROID__) && __ANDROID_API__ < 28
+	return resolve_case_insensitive(posix_path);
+#else
 	// Convert case-insensitive path to case-sensitive path.
 	// glob(3) sorts by default, so if more than one path will match
 	// the pattern, return the first one (in alphabetic order) that matches.
@@ -83,6 +135,7 @@ std::string to_native_path(const std::string &path) noexcept
 	const std::string ret = pglob.gl_pathv[0];
 	globfree(&pglob);
 	return ret;
+#endif
 }
 
 uint16_t local_drive_create_dir(const char* path)
