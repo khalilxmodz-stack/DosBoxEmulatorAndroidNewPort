@@ -29,8 +29,15 @@ if (OPT_DEBUGGER)
   target_link_libraries(dosboxcommon PRIVATE imgui::imgui)
 endif()
 
-target_link_libraries(dosboxcommon PRIVATE OpenGL::GL simpleini)
+target_link_libraries(dosboxcommon PRIVATE simpleini)
 
+# Desktop libGL is only needed when the OpenGL renderer is enabled. Android has
+# no desktop GL, so find_package(OpenGL) is skipped there (see top-level CMakeLists).
 if (C_OPENGL)
-  target_link_libraries(dosboxcommon PRIVATE glad)
+  target_link_libraries(dosboxcommon PRIVATE OpenGL::GL)
 endif()
+
+# glad is linked unconditionally: render/shader_pipeline.cpp is not guarded by
+# C_OPENGL and uses glad's GL headers/function pointers. It is self-contained
+# (no libGL dependency) and unused at runtime when C_OPENGL is off.
+target_link_libraries(dosboxcommon PRIVATE glad)
