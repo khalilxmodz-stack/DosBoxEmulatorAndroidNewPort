@@ -1,0 +1,6 @@
+build/
+.gradle/
+local.properties
+# Populated by CI / scripts/android-build.sh, never committed:
+app/src/main/jniLibs/
+sdl-java/
