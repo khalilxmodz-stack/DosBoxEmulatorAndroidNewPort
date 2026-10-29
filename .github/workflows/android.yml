@@ -1,0 +1,166 @@
+name: Android ARMv7 (armeabi-v7a)
+
+# Cross-compiles the real DOSBox Staging core for 32-bit ARM with the Android NDK,
+# packages it with SDL3's Android activity, and verifies the APK really is armeabi-v7a.
+# Dependencies come from vcpkg (baseline pinned in vcpkg.json), triplet arm-neon-android.
+# No game data (e.g. DOOM WADs) is built, bundled or uploaded.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+      - 'resources/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: 29.0.14206865
+  ANDROID_PLATFORM: android-24
+  VCPKG_TRIPLET: arm-neon-android      # vcpkg community triplet: ANDROID_ABI=armeabi-v7a
+  JNI_DIR: android/app/src/main/jniLibs/armeabi-v7a
+
+jobs:
+  android-armv7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 ndk;${{ env.NDK_VERSION }}'
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake pkg-config binutils unzip \
+                                  autoconf automake libtool bison flex
+          cmake --version   # project needs >= 3.25
+          ninja --version
+
+      - name: Bootstrap vcpkg at the manifest baseline
+        run: |
+          set -e
+          baseline=$(python3 -c "import json;print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout "$baseline"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure (vcpkg installs deps for armeabi-v7a)
+        run: |
+          set -e
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ANDROID_NDK_HOME" || { echo "::error::NDK $NDK_VERSION not found"; exit 1; }
+          cmake -S . -B build/android -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DVCPKG_TARGET_TRIPLET="$VCPKG_TRIPLET" \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DOPT_TESTS=OFF -DOPT_OPENGL=OFF
+
+      - name: Build libmain.so (armeabi-v7a)
+        run: cmake --build build/android --parallel
+
+      - name: Collect native libraries
+        run: |
+          set -e
+          mkdir -p "$JNI_DIR"
+          cp build/android/libmain.so "$JNI_DIR/"
+          sdl=$(find build/android/vcpkg_installed -name 'libSDL3.so' | head -n1)
+          test -n "$sdl" || { echo "::error::libSDL3.so not produced by vcpkg (SDL3 must be a shared library for SDLActivity)"; exit 1; }
+          cp "$sdl" "$JNI_DIR/"
+          ls -l "$JNI_DIR"
+
+      - name: Verify native libraries (ELF32 ARM, no missing dependencies)
+        run: |
+          set -e
+          for so in "$JNI_DIR"/*.so; do
+            hdr=$(readelf -h "$so")
+            echo "$hdr" | grep -q 'Class:.*ELF32'  || { echo "::error::$so is not ELF32"; exit 1; }
+            echo "$hdr" | grep -q 'Machine:.*ARM'  || { echo "::error::$so is not ARM"; exit 1; }
+            echo "$hdr" | grep -q 'AArch64' && { echo "::error::$so is AArch64"; exit 1; }
+          done
+          # Every DT_NEEDED must be shipped in the APK or be an Android system library.
+          system='libc.so libm.so libdl.so liblog.so libandroid.so libz.so libstdc++.so libEGL.so libGLESv1_CM.so libGLESv2.so libGLESv3.so libOpenSLES.so libaaudio.so libjnigraphics.so libmediandk.so libvulkan.so'
+          for so in "$JNI_DIR"/*.so; do
+            for need in $(readelf -d "$so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+              if [ -f "$JNI_DIR/$need" ]; then continue; fi
+              case " $system " in *" $need "*) continue;; esac
+              echo "::error::$(basename "$so") needs $need, which is neither packaged nor an Android system library"
+              exit 1
+            done
+          done
+          echo "native libraries OK"
+
+      - name: Fetch SDL3 Java glue matching the packaged libSDL3
+        run: |
+          set -e
+          cfg=$(find build/android/vcpkg_installed -name 'SDL3ConfigVersion.cmake' -o -name 'sdl3-config-version.cmake' | head -n1)
+          test -n "$cfg" || { echo "::error::cannot determine SDL3 version"; exit 1; }
+          ver=$(sed -n 's/.*PACKAGE_VERSION "\([0-9.]*\)".*/\1/p' "$cfg" | head -n1)
+          test -n "$ver" || { echo "::error::cannot parse SDL3 version from $cfg"; exit 1; }
+          echo "SDL3 $ver"
+          git clone --depth 1 --branch "release-$ver" https://github.com/libsdl-org/SDL "$RUNNER_TEMP/SDL"
+          test -d "$RUNNER_TEMP/SDL/android-project/app/src/main/java/org/libsdl/app" \
+            || { echo "::error::SDL Java glue not found for release-$ver"; exit 1; }
+          echo "SDL_JAVA_DIR=$RUNNER_TEMP/SDL/android-project/app/src/main/java" >> "$GITHUB_ENV"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        run: gradle -p android --no-daemon assembleDebug -Psdl.java.dir="$SDL_JAVA_DIR"
+
+      - name: Verify APK (exists, 32-bit ARM only, no game data)
+        run: |
+          set -e
+          apk=$(ls android/app/build/outputs/apk/debug/*.apk | head -n1)
+          test -s "$apk" || { echo "::error::no APK produced"; exit 1; }
+          unzip -tq "$apk"   # integrity
+          libs=$(unzip -Z1 "$apk" | grep '^lib/' || true)
+          echo "$libs"
+          echo "$libs" | grep -qx 'lib/armeabi-v7a/libmain.so' || { echo "::error::libmain.so missing"; exit 1; }
+          echo "$libs" | grep -qx 'lib/armeabi-v7a/libSDL3.so' || { echo "::error::libSDL3.so missing"; exit 1; }
+          echo "$libs" | grep -Eq '^lib/(arm64-v8a|x86|x86_64|armeabi)/' && { echo "::error::non-ARMv7 libs packaged"; exit 1; }
+          unzip -Z1 "$apk" | grep -Eiq '\.wad$|(^|/)doom2?\.exe$' && { echo "::error::game data found in APK"; exit 1; }
+          aapt2="$ANDROID_HOME/build-tools/34.0.0/aapt2"
+          "$aapt2" dump badging "$apk" | tee badging.txt | grep -E "^(package|sdkVersion|native-code)"
+          grep -qx "native-code: 'armeabi-v7a'" badging.txt || { echo "::error::native-code is not exactly armeabi-v7a"; exit 1; }
+          mkdir -p dist
+          cp "$apk" dist/DOSBox-Staging-Android-ARMv7-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DOSBox-Staging-Android-ARMv7
+          path: dist/DOSBox-Staging-Android-ARMv7-debug.apk
+          if-no-files-found: error
