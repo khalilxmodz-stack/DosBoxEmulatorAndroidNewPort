@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User manual
+    url: https://www.dosbox-staging.org/0.83/manual/
+    about: Check out the user manual first — most questions we receive are already answered in the manual.
+
+  - name: Game issues wiki
+    url: https://github.com/dosbox-staging/dosbox-staging/wiki/Game-issues
+    about: Your problem may already be known, and there may be a workaround.
+
+  - name: Discord
+    url: https://discord.gg/WwAg3Xf
+    about: Alternatively, you can ask questions on our Discord, but for bugs you'll need an issue ticket.
