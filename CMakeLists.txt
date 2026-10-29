@@ -178,6 +178,11 @@ elseif (ANDROID)
   set(DOSBOX_PLATFORM_ANDROID ON)
   set(DOSBOX_PLATFORM_LINUX   ON)
 
+  # 32-bit Android has a 32-bit off_t by default; DOSBox (see misc/cross.h)
+  # requires 64-bit file offsets. Supported by Bionic from API 24 (our minSdk).
+  # Must be set before any target is created so every subdirectory gets it.
+  add_compile_definitions(_FILE_OFFSET_BITS=64)
+
 elseif (LINUX)
   set(DOSBOX_PLATFORM_LINUX ON)
 
