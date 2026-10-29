@@ -74,8 +74,11 @@ if (DOSBOX_PLATFORM_WINDOWS)
   target_sources(dosboxcommon PRIVATE cdrom_win32.cpp)
 endif()
 
-# Linux-only CD-ROM ioctl backend
-if (DOSBOX_PLATFORM_LINUX)
+# Linux-only CD-ROM ioctl backend. Not for Android: Bionic has no <mntent.h>,
+# phones have no optical drives, and cdrom.h only declares the class when the
+# LINUX macro is defined (it is not on Android), so DOSBox falls back to
+# CDROM_Interface_Fake / image mounting there.
+if (DOSBOX_PLATFORM_LINUX AND NOT DOSBOX_PLATFORM_ANDROID)
   target_sources(dosboxcommon PRIVATE cdrom_ioctl_linux.cpp)
 endif()
 
